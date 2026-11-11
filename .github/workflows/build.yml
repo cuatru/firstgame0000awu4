@@ -1,0 +1,25 @@
+name: watchOS build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+
+      - name: Build without signing
+        run: |
+          xcodebuild \
+            -project FlowWatch.xcodeproj \
+            -scheme FlowWatch \
+            -destination 'generic/platform=watchOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
