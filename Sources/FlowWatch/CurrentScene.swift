@@ -31,10 +31,18 @@ final class CurrentScene: SKScene {
     private var elapsed: Double = 0
     private var spawnIn: Double = 0.8
     private var lastTime: TimeInterval?
+    private var lastHapticAt: TimeInterval = 0
     private var score = 0
     private var lives = 3
     private var combo = 0
+    private var bestCombo = 0
     private var passedGates = 0
+    private var graceUsed = false
+    private var wasCalm = false
+
+    // CGPath compartido entre todos los gates (auditoría perf m2)
+    private var gateTopPath: CGPath?
+    private var gateBottomPath: CGPath?
 
     private var playerX: CGFloat {
         size.width * 0.25
@@ -61,7 +69,7 @@ final class CurrentScene: SKScene {
         player.fillColor = .white
         player.strokeColor = .cyan
         player.lineWidth = 1.5
-        player.glowWidth = 5
+        // sin glowWidth: el glow real queda reservado al target de HALO (auditoría perf M2)
 
         scoreLabel.fontName = "HelveticaNeue-Bold"
         scoreLabel.fontSize = 17
@@ -75,6 +83,16 @@ final class CurrentScene: SKScene {
         addChild(player)
         addChild(scoreLabel)
         addChild(hintLabel)
+
+        let width: CGFloat = 16
+        gateTopPath = CGPath(
+            roundedRect: CGRect(x: -width / 2, y: 0, width: width, height: size.height),
+            cornerWidth: 7, cornerHeight: 7, transform: nil
+        )
+        gateBottomPath = CGPath(
+            roundedRect: CGRect(x: -width / 2, y: -size.height, width: width, height: size.height),
+            cornerWidth: 7, cornerHeight: 7, transform: nil
+        )
 
         playerAura.run(
             SKAction.repeatForever(
@@ -94,6 +112,15 @@ final class CurrentScene: SKScene {
         restart()
     }
 
+    override func didChangeSize(_ oldValue: CGSize) {
+        guard built else { return }
+        playerY = min(max(playerY, 38), size.height - 42)
+        player.position = CGPoint(x: playerX, y: playerY)
+        playerAura.position = player.position
+        scoreLabel.position = CGPoint(x: size.width / 2, y: size.height - 42)
+        hintLabel.position = CGPoint(x: size.width / 2, y: 25)
+    }
+
     func restart() {
         for gate in gates {
             gate.top.removeFromParent()
@@ -111,23 +138,19 @@ final class CurrentScene: SKScene {
         score = 0
         lives = 3
         combo = 0
+        bestCombo = 0
         passedGates = 0
+        graceUsed = false
+        wasCalm = false
 
         player.removeAllActions()
         player.alpha = 1
         player.position = CGPoint(x: playerX, y: playerY)
         playerAura.position = player.position
 
-        scoreLabel.position = CGPoint(
-            x: size.width / 2,
-            y: size.height - 42
-        )
-        hintLabel.position = CGPoint(
-            x: size.width / 2,
-            y: 25
-        )
+        didChangeSize(size)
 
-        scoreLabel.text = "35 SECOND RUN"
+        scoreLabel.text = "3 x 12s RUN"
         hintLabel.text = "HOLD TO RISE"
     }
 
@@ -183,10 +206,21 @@ final class CurrentScene: SKScene {
         player.position = CGPoint(x: playerX, y: playerY)
         playerAura.position = player.position
 
-        spawnIn -= seconds
-        if spawnIn <= 0 {
-            spawnGate()
-            spawnIn = GameRules.currentSpawnInterval(elapsed: elapsed)
+        // Fases con calma: sin spawns durante el respiro (feedback Agente C)
+        let calm = GameRules.currentIsCalm(elapsed)
+        if calm && !wasCalm {
+            hintLabel.text = "BREATHE"
+        } else if !calm && wasCalm {
+            hintLabel.text = "GO"
+        }
+        wasCalm = calm
+
+        if !calm {
+            spawnIn -= seconds
+            if spawnIn <= 0 {
+                spawnGate()
+                spawnIn = GameRules.currentSpawnInterval(elapsed: elapsed)
+            }
         }
 
         updateGates(
@@ -206,33 +240,16 @@ final class CurrentScene: SKScene {
             ? CGFloat.random(in: lower...upper)
             : size.height / 2
 
-        let width: CGFloat = 16
         let x = size.width + 24
 
-        let top = SKShapeNode(
-            rect: CGRect(
-                x: -width / 2,
-                y: 0,
-                width: width,
-                height: size.height
-            ),
-            cornerRadius: 7
-        )
-        let bottom = SKShapeNode(
-            rect: CGRect(
-                x: -width / 2,
-                y: -size.height,
-                width: width,
-                height: size.height
-            ),
-            cornerRadius: 7
-        )
+        guard let topPath = gateTopPath, let bottomPath = gateBottomPath else { return }
+        let top = SKShapeNode(path: topPath)
+        let bottom = SKShapeNode(path: bottomPath)
 
         for node in [top, bottom] {
             node.fillColor = SKColor.white.withAlphaComponent(0.16)
             node.strokeColor = SKColor.cyan.withAlphaComponent(0.72)
             node.lineWidth = 1
-            node.glowWidth = 3
             addChild(node)
         }
 
@@ -272,10 +289,11 @@ final class CurrentScene: SKScene {
                     gates[index].passed = true
                     passedGates += 1
                     combo += 1
+                    bestCombo = max(bestCombo, combo)
                     score += 100 + min(combo - 1, 10) * 10
 
                     if combo % 3 == 0 {
-                        WKInterfaceDevice.current().play(.click)
+                        playHaptic(.click)
                     }
                     hintLabel.text = "COMBO ×\(combo)  •  \(lives) SHIELDS"
                 }
@@ -296,10 +314,18 @@ final class CurrentScene: SKScene {
     }
 
     private func registerHit() {
+        // Primera colisión de cada run es gratis (gracia, feedback Agente C)
+        if !graceUsed {
+            graceUsed = true
+            playHaptic(.retry)
+            hintLabel.text = "GRACE  •  SHIELD SAVED"
+            return
+        }
+
         lives -= 1
         combo = 0
-        score = max(0, score - 75)
-        WKInterfaceDevice.current().play(.failure)
+        score = max(0, score - GameRules.currentFailPenalty)
+        playHaptic(.failure)
 
         player.run(
             SKAction.sequence([
@@ -308,7 +334,8 @@ final class CurrentScene: SKScene {
             ])
         )
 
-        if lives == 0 {
+        if lives <= 0 {
+            lives = 0
             finish(cleared: false)
         } else {
             hintLabel.text = "HIT  •  \(lives) SHIELDS LEFT"
@@ -323,7 +350,7 @@ final class CurrentScene: SKScene {
         score += Int(elapsed * 5)
         if cleared {
             score += 500 + lives * 100
-            WKInterfaceDevice.current().play(.success)
+            playHaptic(.success)
         }
 
         updateHUD()
@@ -334,8 +361,22 @@ final class CurrentScene: SKScene {
             : "\(passedGates) gates  •  \(Int(elapsed)) seconds survived"
 
         onFinish?(
-            RunSummary(score: score, cleared: cleared, detail: detail)
+            RunSummary(
+                score: score,
+                cleared: cleared,
+                detail: detail,
+                bestCombo: bestCombo,
+                elapsed: elapsed
+            )
         )
+    }
+
+    // Throttle de haptics: mínimo 0.15s entre plays (auditoría perf m1)
+    private func playHaptic(_ type: WKHapticType) {
+        let now = Date().timeIntervalSince1970
+        guard now - lastHapticAt > 0.15 else { return }
+        lastHapticAt = now
+        WKInterfaceDevice.current().play(type)
     }
 
     private func updateHUD() {

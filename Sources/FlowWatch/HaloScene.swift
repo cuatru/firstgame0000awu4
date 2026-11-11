@@ -9,6 +9,7 @@ final class HaloScene: SKScene {
     var onFinish: ((RunSummary) -> Void)?
 
     private let ring = SKShapeNode()
+    private let flashRing = SKShapeNode()
     private let target = SKShapeNode()
     private let playerAura = SKShapeNode(circleOfRadius: 13)
     private let player = SKShapeNode(circleOfRadius: 6.5)
@@ -18,8 +19,11 @@ final class HaloScene: SKScene {
     private var built = false
     private var phase: Phase = .ready
     private var angle = -Double.pi / 2
-    private var targetAngle = 0.35
+    // Arco objetivo fijo a las 12 en punto (feedback Agente C: el dedo nunca lo tapa)
+    private let targetAngle = Double.pi / 2
     private var lastTime: TimeInterval?
+    private var lastHapticAt: TimeInterval = 0
+    private var elapsed = 0.0
     private var hitCount = 0
     private var combo = 0
     private var bestCombo = 0
@@ -53,18 +57,22 @@ final class HaloScene: SKScene {
         ring.strokeColor = SKColor.white.withAlphaComponent(0.18)
         ring.lineWidth = 2
 
+        flashRing.fillColor = .clear
+        flashRing.lineWidth = 6
+        flashRing.alpha = 0
+        flashRing.zPosition = 1
+
         target.fillColor = .clear
         target.strokeColor = .cyan
         target.lineWidth = 8
         target.lineCap = .round
-        target.glowWidth = 7
+        target.glowWidth = 7   // único glow real de la escena (auditoría perf M2)
 
         playerAura.fillColor = SKColor.cyan.withAlphaComponent(0.22)
         playerAura.strokeColor = .clear
 
         player.fillColor = .white
         player.strokeColor = .white
-        player.glowWidth = 4
 
         scoreLabel.fontName = "HelveticaNeue-Bold"
         scoreLabel.fontSize = 17
@@ -75,6 +83,7 @@ final class HaloScene: SKScene {
         hintLabel.fontColor = SKColor.white.withAlphaComponent(0.8)
 
         addChild(ring)
+        addChild(flashRing)
         addChild(target)
         addChild(playerAura)
         addChild(player)
@@ -102,8 +111,8 @@ final class HaloScene: SKScene {
     func restart() {
         phase = .ready
         angle = -Double.pi / 2
-        targetAngle = 0.35
         lastTime = nil
+        elapsed = 0
         hitCount = 0
         combo = 0
         bestCombo = 0
@@ -115,10 +124,23 @@ final class HaloScene: SKScene {
         target.alpha = 1
         player.removeAllActions()
         player.alpha = 1
+        flashRing.removeAllActions()
+        flashRing.alpha = 0
 
         layout()
         updateHUD()
         hintLabel.text = "TAP TO START"
+
+        // Fase ready auto-demostrativa: el arco pulsa hasta el primer tap (feedback Agente C)
+        target.run(
+            SKAction.repeatForever(
+                SKAction.sequence([
+                    SKAction.scale(to: 1.08, duration: 0.5),
+                    SKAction.scale(to: 0.96, duration: 0.5)
+                ])
+            ),
+            withKey: "readyPulse"
+        )
     }
 
     func tap() {
@@ -126,7 +148,9 @@ final class HaloScene: SKScene {
         case .ready:
             phase = .playing
             lastTime = nil
-            hintLabel.text = "TAP IN THE LIGHT"
+            target.removeAction(forKey: "readyPulse")
+            target.setScale(1)
+            hintLabel.text = "TAP AT THE TOP"
         case .playing:
             judge()
         case .finished:
@@ -147,6 +171,7 @@ final class HaloScene: SKScene {
 
         lastTime = currentTime
         let delta = min(max(currentTime - previous, 0), 0.05)
+        elapsed += delta
         angle = GameRules.wrappedAngle(
             angle + GameRules.haloSpeed(hit: hitCount) * delta
         )
@@ -159,9 +184,10 @@ final class HaloScene: SKScene {
 
         guard distance <= tolerance else {
             lives -= 1
-            combo = 0
-            score = max(0, score - 50)
-            WKInterfaceDevice.current().play(.failure)
+            combo = combo / 2   // combo a la mitad, no a 0 (feedback Agente C)
+            score = max(0, score - GameRules.haloFailPenalty)
+            playHaptic(.failure)
+            flash(.red)
 
             player.run(
                 SKAction.sequence([
@@ -170,7 +196,8 @@ final class HaloScene: SKScene {
                 ])
             )
 
-            if lives == 0 {
+            if lives <= 0 {
+                lives = 0
                 finish(cleared: false)
             } else {
                 hintLabel.text = "MISS  •  \(lives) SHIELDS"
@@ -183,7 +210,8 @@ final class HaloScene: SKScene {
         combo += 1
         bestCombo = max(bestCombo, combo)
         score += GameRules.haloPoints(combo: combo)
-        WKInterfaceDevice.current().play(.click)
+        playHaptic(.click)
+        flash(.green)
         flashTarget()
 
         if hitCount >= GameRules.haloHitsToFinish {
@@ -192,11 +220,6 @@ final class HaloScene: SKScene {
             finish(cleared: true)
             return
         }
-
-        targetAngle = GameRules.wrappedAngle(
-            targetAngle + Double.random(in: 1.1...(2 * Double.pi - 1.1))
-        )
-        updateTargetPath()
 
         hintLabel.text = combo > 1
             ? "COMBO ×\(combo)"
@@ -210,7 +233,7 @@ final class HaloScene: SKScene {
         hintLabel.text = cleared ? "FLOW COMPLETE" : "RUN OVER"
 
         if cleared {
-            WKInterfaceDevice.current().play(.success)
+            playHaptic(.success)
         }
 
         let detail = cleared
@@ -218,8 +241,35 @@ final class HaloScene: SKScene {
             : "\(hitCount)/\(GameRules.haloHitsToFinish) gates  •  Best combo ×\(bestCombo)"
 
         onFinish?(
-            RunSummary(score: score, cleared: cleared, detail: detail)
+            RunSummary(
+                score: score,
+                cleared: cleared,
+                detail: detail,
+                bestCombo: bestCombo,
+                elapsed: elapsed
+            )
         )
+    }
+
+    // Flash visual de 120ms sincronizado con el haptic (feedback Agente C)
+    private func flash(_ color: SKColor) {
+        flashRing.removeAllActions()
+        flashRing.strokeColor = color
+        flashRing.alpha = 0.9
+        flashRing.run(
+            SKAction.sequence([
+                SKAction.fadeOut(withDuration: 0.12),
+                SKAction.run { [weak self] in self?.flashRing.alpha = 0 }
+            ])
+        )
+    }
+
+    // Throttle de haptics: mínimo 0.15s entre plays (auditoría perf m1)
+    private func playHaptic(_ type: WKHapticType) {
+        let now = Date().timeIntervalSince1970
+        guard now - lastHapticAt > 0.15 else { return }
+        lastHapticAt = now
+        WKInterfaceDevice.current().play(type)
     }
 
     private func flashTarget() {
@@ -242,7 +292,7 @@ final class HaloScene: SKScene {
 
     private func layout() {
         ring.position = center
-        ring.path = CGPath(
+        let ringPath = CGPath(
             ellipseIn: CGRect(
                 x: -radius,
                 y: -radius,
@@ -251,6 +301,9 @@ final class HaloScene: SKScene {
             ),
             transform: nil
         )
+        ring.path = ringPath
+        flashRing.position = center
+        flashRing.path = ringPath
 
         target.position = center
         updateTargetPath()

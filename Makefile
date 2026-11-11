@@ -1,4 +1,4 @@
-WATCH_DESTINATION ?= platform=watchOS Simulator,name=Apple Watch Ultra 2 (49mm)
+WATCH_DESTINATION ?= generic/platform=watchOS Simulator
 
 .PHONY: generate open build test
 

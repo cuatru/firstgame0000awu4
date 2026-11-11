@@ -20,7 +20,7 @@ struct LiquidBackground: View {
             Circle()
                 .fill(Color.cyan.opacity(0.22))
                 .frame(width: 150, height: 150)
-                .blur(radius: 30)
+                .blur(radius: 8)
                 .offset(
                     x: animate ? 48 : -42,
                     y: animate ? -60 : 35
@@ -29,7 +29,7 @@ struct LiquidBackground: View {
             Circle()
                 .fill(Color.purple.opacity(0.20))
                 .frame(width: 130, height: 130)
-                .blur(radius: 28)
+                .blur(radius: 8)
                 .offset(
                     x: animate ? -50 : 45,
                     y: animate ? 60 : -35
