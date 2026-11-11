@@ -148,11 +148,7 @@ struct HaloView: View {
         ZStack {
             LiquidBackground()
 
-            SpriteView(
-                scene: scene,
-                preferredFramesPerSecond: 60,
-                options: [.allowsTransparency]
-            )
+            SpriteView(scene: scene)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture {
@@ -199,11 +195,7 @@ struct CurrentView: View {
         ZStack {
             LiquidBackground()
 
-            SpriteView(
-                scene: scene,
-                preferredFramesPerSecond: 60,
-                options: [.allowsTransparency]
-            )
+            SpriteView(scene: scene)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .gesture(
