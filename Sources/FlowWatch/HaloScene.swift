@@ -34,7 +34,7 @@ final class HaloScene: SKScene {
         min(size.width, size.height) * 0.27
     }
 
-    init() {
+    override init() {
         super.init(size: CGSize(width: 205, height: 251))
         scaleMode = .resizeFill
         backgroundColor = .clear
@@ -44,7 +44,7 @@ final class HaloScene: SKScene {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func didMove(to view: SKView) {
+    override func sceneDidLoad() {
         backgroundColor = .clear
         guard !built else { return }
         built = true
